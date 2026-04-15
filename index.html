@@ -1149,12 +1149,13 @@ ${hint}
     }
 
     const totalStocksFound = _parsedAccounts.reduce((s, a) => s + (a.stocks?.length || 0), 0);
-    setImportStatus(`✓ ${_parsedAccounts.length}개 계좌 · ${totalStocksFound}개 종목 분석 완료 — 종목 등록 중…`);
+    setImportStatus(`✓ ${_parsedAccounts.length}개 계좌 · ${totalStocksFound}개 종목 분석 완료 — 종목 등록 시작 중…`);
+    await new Promise(r => setTimeout(r, 30)); // 상태 메시지 렌더 후 등록 시작
 
     if (errors.length) console.warn('[import] 일부 실패:', errors);
 
-    // 자동 종목 등록
-    const result = applyParsedData();
+    // 자동 종목 등록 (비동기 — 진행률 표시)
+    const result = await applyParsedData();
 
     await new Promise(r => setTimeout(r, 50));
 
@@ -1335,35 +1336,55 @@ function showParseModal(applyResult) {
   document.getElementById('btnParseApply').onclick  = closeModal;
 }
 
-function applyParsedData() {
+async function applyParsedData() {
   let addedCount = 0, skippedCount = 0;
   const addedStocks = []; // {name, code, category} 기록용
 
-  // DB를 한 번만 빌드해서 25개 종목 루프에서 재사용
-  const db = getMergedStockDB();
-
+  // 전체 종목 평탄화 (중복 체크용 미리 계산)
+  const allStocks = [];
   _parsedAccounts.forEach(acct => {
-    (acct.stocks || []).forEach(s => {
-      if (!s.name) return;
-      const name     = s.name.trim();
-      const cat      = s.category || guessCategory(name) || '성장';
-      const value    = s.value    ? String(Math.round(Number(s.value)))    : '';
-      const quantity = s.quantity ? Math.round(Number(s.quantity)) : 0;
-      const code     = findCodeByName(name, db); // 공유 db로 코드 매칭
+    (acct.stocks || []).forEach(s => { if (s.name) allStocks.push({ acct, s }); });
+  });
+  const totalCount = allStocks.length;
 
-      if (!state.stocks.find(x => x.name === name)) {
-        state.stocks.push({
-          id: uid(), name, code, quantity,
-          value, dividendRate: '', isSafe: false, category: cat, aiReason: '',
-        });
-        addedStocks.push({ name, code, category: cat });
-        addedCount++;
-      } else {
-        skippedCount++;
-      }
-    });
+  // 중복 미리 세기 (이미 등록된 이름)
+  const dupNames = new Set(allStocks.map(({s}) => s.name.trim()).filter(n => state.stocks.find(x => x.name === n)));
+  const toAddCount = totalCount - dupNames.size;
 
-    // 절세계좌 납입금 반영
+  setImportStatus(`종목 등록 중… 중복 ${dupNames.size}개 제외, ${toAddCount}개 등록 예정`);
+  await new Promise(r => setTimeout(r, 0)); // UI 업데이트 허용
+
+  // DB를 한 번만 빌드해서 전체 루프에서 재사용
+  const db = getMergedStockDB();
+  setImportStatus(`종목 등록 중… (0 / ${toAddCount})`);
+  await new Promise(r => setTimeout(r, 0));
+
+  let processed = 0;
+  for (const { acct, s } of allStocks) {
+    const name     = s.name.trim();
+    const cat      = s.category || guessCategory(name) || '성장';
+    const value    = s.value    ? String(Math.round(Number(s.value)))    : '';
+    const quantity = s.quantity ? Math.round(Number(s.quantity)) : 0;
+
+    if (!state.stocks.find(x => x.name === name)) {
+      const code = findCodeByName(name, db);
+      state.stocks.push({
+        id: uid(), name, code, quantity,
+        value, dividendRate: '', isSafe: false, category: cat, aiReason: '',
+      });
+      addedStocks.push({ name, code, category: cat });
+      addedCount++;
+      processed++;
+      // 매 종목마다 UI 업데이트 (브라우저 렌더 허용)
+      setImportStatus(`종목 등록 중… (${processed} / ${toAddCount}) — ${name}`);
+      await new Promise(r => setTimeout(r, 0));
+    } else {
+      skippedCount++;
+    }
+  }
+
+  // 절세계좌 납입금 반영
+  _parsedAccounts.forEach(acct => {
     const typeInfo = ACCT_TYPES.find(t => t.id === acct.type);
     if (typeInfo?.stateKey && acct.total) {
       const monthlyGuess = Math.round(Number(acct.total) / 12);
@@ -1373,8 +1394,6 @@ function applyParsedData() {
 
   savePortfolioToSupabase?.();
   save();
-  // renderStep(false) 제거 — 전체 DOM 재렌더가 메인 스레드를 수 분간 블로킹하던 원인
-  // 모달 닫기 후 필요 시 renderStep이 호출됨
   return { addedCount, skippedCount, addedStocks };
 }
 
