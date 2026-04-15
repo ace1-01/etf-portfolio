@@ -348,9 +348,14 @@
     .img-drop-icon { font-size: 28px; margin-bottom: 8px; }
     .img-drop-text { font-size: 13px; color: #7dd3fc; font-weight: 500; }
     .img-drop-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
-    .img-preview-wrap { position: relative; display: inline-block; }
+    .img-preview-wrap { position: relative; display: block; }
     .img-preview { max-width: 100%; max-height: 160px; border-radius: 8px; border: 1px solid rgba(79,195,247,0.3); display: block; }
-    .btn-img-clear { position: absolute; top: 6px; right: 6px; background: rgba(0,0,0,0.6); border: none; color: white; width: 22px; height: 22px; border-radius: 50%; cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+    .img-thumb-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+    .img-thumb-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .img-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(79,195,247,0.35); }
+    .img-thumb-name { font-size: 10px; color: var(--muted); max-width: 72px; text-align: center; overflow: hidden; }
+    .img-preview-info { font-size: 12px; color: #7dd3fc; margin: 4px 0 6px; }
+    .btn-img-clear { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15); color: var(--muted); border-radius: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; cursor: pointer; transition: background .2s; }
     .img-acct-select { margin-top: 10px; }
     .img-acct-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
     .img-acct-btns { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -954,7 +959,7 @@ const ACCT_TYPES = [
 ];
 
 // 이미지 파일 → base64 → Claude 분석 → 모달
-let _imgParseFile = null;
+let _imgParseFiles = [];         // 선택된 이미지 파일 목록 (다중)
 let _imgParseAcctHint = null;   // 사용자가 선택한 계좌 유형 힌트
 let _parsedAccounts = [];       // 파싱 결과 (모달에서 수정 가능)
 
@@ -973,8 +978,8 @@ function renderImageImportCard() {
         <div class="img-drop-zone" id="imgDropZone">
           <div class="img-drop-icon">🖼️</div>
           <div class="img-drop-text">이미지를 드래그하거나 클릭해서 선택</div>
-          <div class="img-drop-sub">JPG · PNG · WEBP 지원</div>
-          <input type="file" id="imgFileInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
+          <div class="img-drop-sub">여러 장 동시 선택 가능 · JPG · PNG · WEBP 지원</div>
+          <input type="file" id="imgFileInput" accept="image/jpeg,image/png,image/webp,image/gif" multiple style="display:none">
         </div>
       </div>
 
@@ -988,19 +993,14 @@ function renderImageImportCard() {
 }
 
 async function runImageImport() {
-  if (!_imgParseFile) return;
+  if (!_imgParseFiles.length) return;
   if (!getApiKey()) { showToast('API 키를 먼저 설정해주세요. (⚙ API 설정)', true); return; }
 
   const btn = document.getElementById('btnRunImport');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> AI 분석 중…';
 
-  try {
-    const mediaType = _imgParseFile.type || 'image/jpeg';
-    const base64    = await fileToBase64(_imgParseFile);
-    const hint      = _imgParseAcctHint ? `계좌 유형 힌트: ${ACCT_TYPES.find(t=>t.id===_imgParseAcctHint)?.label || ''}` : '';
-
-    const prompt = `이 이미지는 한국 증권사 앱/HTS의 보유종목(잔고) 화면 캡처입니다.
+  const hint = _imgParseAcctHint ? `계좌 유형 힌트: ${ACCT_TYPES.find(t=>t.id===_imgParseAcctHint)?.label || ''}` : '';
+  const prompt = `이 이미지는 한국 증권사 앱/HTS의 보유종목(잔고) 화면 캡처입니다.
 ${hint}
 
 다음 정보를 추출해서 JSON으로만 응답해주세요 (설명 없이 JSON만):
@@ -1029,19 +1029,34 @@ ${hint}
 - 여러 계좌가 보이면 accounts 배열에 각각 추가
 - 이미지에서 읽기 어려운 값은 null`;
 
-    const raw  = await callClaudeWithImage(prompt, base64, mediaType);
-    const json = raw.match(/\{[\s\S]*\}/)?.[0];
-    if (!json) throw new Error('응답 파싱 실패 — 이미지를 더 선명하게 다시 시도해보세요.');
-    _parsedAccounts = JSON.parse(json).accounts || [];
-    if (!_parsedAccounts.length) throw new Error('종목을 찾을 수 없습니다. 보유종목 화면인지 확인해주세요.');
+  _parsedAccounts = [];
+  let failCount = 0;
 
-    showParseModal();
-  } catch(e) {
-    showToast('분석 실패: ' + e.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '✨ AI로 종목 분석하기';
+  for (let i = 0; i < _imgParseFiles.length; i++) {
+    const file = _imgParseFiles[i];
+    btn.innerHTML = `<span class="spinner"></span> 분석 중… (${i+1}/${_imgParseFiles.length})`;
+    try {
+      const mediaType = file.type || 'image/jpeg';
+      const base64    = await fileToBase64(file);
+      const raw       = await callClaudeWithImage(prompt, base64, mediaType);
+      const json      = raw.match(/\{[\s\S]*\}/)?.[0];
+      if (!json) { failCount++; continue; }
+      const accounts  = JSON.parse(json).accounts || [];
+      _parsedAccounts.push(...accounts);
+    } catch(e) {
+      failCount++;
+    }
   }
+
+  btn.disabled = false;
+  btn.innerHTML = '✨ AI로 종목 분석하기';
+
+  if (!_parsedAccounts.length) {
+    showToast('종목을 찾을 수 없습니다. 이미지를 확인해주세요.', true);
+    return;
+  }
+  if (failCount > 0) showToast(`${failCount}장 분석 실패, 나머지는 정상 처리됐습니다.`, true);
+  showParseModal();
 }
 
 function showParseModal() {
@@ -1160,12 +1175,13 @@ function bindImageImport() {
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault(); dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file) setImportFile(file);
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+    if (files.length) setImportFiles(files);
   });
 
   fileInput.addEventListener('change', e => {
-    if (e.target.files[0]) setImportFile(e.target.files[0]);
+    const files = Array.from(e.target.files);
+    if (files.length) setImportFiles(files);
   });
 
   document.getElementById('imgAcctBtns').addEventListener('click', e => {
@@ -1178,18 +1194,27 @@ function bindImageImport() {
   runBtn.addEventListener('click', runImageImport);
 }
 
-function setImportFile(file) {
-  _imgParseFile = file;
+function setImportFiles(files) {
+  _imgParseFiles = files;
   const wrap = document.getElementById('imgDropZoneWrap');
-  const url  = URL.createObjectURL(file);
+  const urls = files.map(f => URL.createObjectURL(f));
+
+  const thumbs = files.map((f, i) => `
+    <div class="img-thumb-item">
+      <img class="img-thumb" src="${urls[i]}" alt="${esc(f.name)}">
+      <div class="img-thumb-name">${esc(f.name.length > 14 ? f.name.slice(0,12)+'…' : f.name)}</div>
+    </div>`).join('');
+
   wrap.innerHTML = `
     <div class="img-preview-wrap">
-      <img class="img-preview" src="${url}" alt="preview">
-      <button class="btn-img-clear" id="btnImgClear">×</button>
+      <div class="img-thumb-list">${thumbs}</div>
+      <div class="img-preview-info">${files.length}장 선택됨</div>
+      <button class="btn-img-clear" id="btnImgClear">× 다시 선택</button>
     </div>`;
+
   document.getElementById('btnImgClear').onclick = () => {
-    _imgParseFile = null;
-    URL.revokeObjectURL(url);
+    _imgParseFiles = [];
+    urls.forEach(u => URL.revokeObjectURL(u));
     renderStep(false);
   };
   document.getElementById('btnRunImport').disabled = false;
