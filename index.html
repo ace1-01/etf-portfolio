@@ -410,6 +410,7 @@
     .parse-target-note { font-size: 11px; color: var(--muted); margin-top: 6px; }
     .parse-ai-section { background: rgba(240,192,64,0.05); border: 1px solid rgba(240,192,64,0.18); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
     .parse-ai-text { font-size: 13px; color: rgba(255,255,255,0.75); line-height: 1.65; white-space: pre-wrap; }
+    .parse-acct-comment { margin-top: 8px; font-size: 12px; color: rgba(240,192,64,0.8); line-height: 1.5; padding: 8px 10px; background: rgba(240,192,64,0.05); border-radius: 8px; }
     .btn-parse-apply { flex: 1; background: #7dd3fc; color: #0d1b2a; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; transition: background .2s; }
     .btn-parse-apply:hover { background: #93dcff; }
     .btn-parse-cancel { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: var(--muted); border-radius: 10px; padding: 13px 18px; font-size: 14px; font-family: inherit; cursor: pointer; }
@@ -759,9 +760,12 @@ function calcRemaining(year, month) {
 /* ── Category keyword heuristic ── */
 function guessCategory(name) {
   const n = (name || '').toLowerCase();
-  if (/배당|dividend|커버드콜|covered.?call|인컴|income|고배당|리츠|reit|분배/.test(n)) return '배당';
-  if (/채권|bond|국채|금\s|금선물|gold|달러|dollar|인버스|inverse|원자재|commodity|물가|tips|단기|mmf|은선물|은액티브|실버|silver|원유|crude|oil|유가|구리|copper|니켈|nickel|알루미늄|aluminum|천연가스|gas/.test(n)) return '헷지';
-  return null; // 확실한 신호 없음 → 경고 안 함
+  // 커버드콜은 배당으로 분류
+  if (/커버드콜|covered.?call/.test(n)) return '배당';
+  if (/배당|dividend|인컴|income|고배당|리츠|reit|분배/.test(n)) return '배당';
+  // MMF·채권·금·은·원자재 → 헷지
+  if (/머니마켓|money.?market|mmf|채권|bond|국채|금\b|금선물|골드|gold|달러|dollar|인버스|inverse|원자재|commodity|물가|tips|단기|은\b|은선물|은액티브|실버|silver|원유|crude|oil|유가|구리|copper|니켈|nickel|알루미늄|aluminum|천연가스|gas/.test(n)) return '헷지';
+  return null;
 }
 
 /* ══════════════════════════════════════════
@@ -1040,31 +1044,31 @@ ${hint}
   "accounts": [
     {
       "type": "pension_tax|pension_notax|irp|isa|general",
-      "type_label": "계좌명 또는 계좌유형",
-      "total": 총평가금액(숫자),
+      "type_label": "계좌명 또는 계좌유형 (증권사명 포함)",
+      "total": 총평가금액(숫자 또는 null),
       "stocks": [
         {
           "name": "종목명",
-          "value": 평가금액(숫자),
+          "value": 평가금액(숫자 또는 null),
           "quantity": 보유수량(숫자 또는 null),
-          "ratio": 비중%(숫자 또는 null),
-          "category": "성장|배당|헷지"
+          "category": "성장|배당|헷지",
+          "account_comment": "이 계좌에 대한 한 문장 분석 (계좌의 첫 종목에만 기입, 나머지는 null)"
         }
       ]
     }
   ],
-  "ai_analysis": "이 포트폴리오의 계좌 구성과 종목 배분에 대한 전문가 의견 (3~4문장, 한국어)"
+  "overall_analysis": "전체 포트폴리오에 대한 종합 분석 (5문장 이내, 계좌 구성·분산도·리스크·개선점 포함)"
 }
 
 주의사항:
 - 금액은 콤마 없는 순수 숫자
 - 계좌 유형: IRP/개인형퇴직연금 → irp, ISA/중개형ISA → isa, 연금저축(세액공제/소득공제) → pension_tax, 연금저축(일반/비과세) → pension_notax, 그 외 → general
-- category 판단: 주가지수/나스닥/S&P/성장ETF → 성장, 배당/리츠/인컴ETF → 배당, 채권/금/달러/원자재 → 헷지
-- 여러 계좌가 보이면 accounts 배열에 각각 추가
+- category: 커버드콜 포함 → 배당, 주가지수/나스닥/S&P/성장ETF → 성장, MMF/머니마켓/채권/금/은/원자재/달러 → 헷지
+- 화면이 잘려 같은 계좌가 여러 장에 나뉜 경우 하나의 account로 합쳐서 출력
 - 이미지에서 읽기 어려운 값은 null`;
 
   _parsedAccounts = [];
-  let aiAnalysis = '';
+  let allAnalysis = '';
   const errors = [];
 
   try {
@@ -1081,22 +1085,57 @@ ${hint}
         const accounts = parsed.accounts || [];
         if (!accounts.length) { errors.push(`${file.name}: 종목 없음`); continue; }
         _parsedAccounts.push(...accounts);
-        if (parsed.ai_analysis) aiAnalysis += (aiAnalysis ? ' ' : '') + parsed.ai_analysis;
+        if (parsed.overall_analysis) allAnalysis += (allAnalysis ? ' ' : '') + parsed.overall_analysis;
       } catch(e) {
         errors.push(`${file.name}: ${e.message}`);
       }
     }
 
-    // category 보완
+    // 1) category 보완 (guessCategory 우선 적용)
     _parsedAccounts.forEach(acct => {
       (acct.stocks || []).forEach(s => {
-        const cat = s.category || '';
-        if (!['성장','배당','헷지'].includes(cat)) {
-          s.category = guessCategory(s.name) || '성장';
-        }
+        const guess = guessCategory(s.name);
+        if (guess) s.category = guess;
+        else if (!['성장','배당','헷지'].includes(s.category || '')) s.category = '성장';
       });
     });
-    _parsedAiAnalysis = aiAnalysis;
+
+    // 2) 같은 type+type_label 계좌 병합 (분할 캡처 대응)
+    const mergeMap = new Map();
+    _parsedAccounts.forEach(acct => {
+      const key = (acct.type || '') + '||' + (acct.type_label || '');
+      if (mergeMap.has(key)) {
+        const existing = mergeMap.get(key);
+        // 종목 병합 (이름 중복 제거)
+        const names = new Set((existing.stocks || []).map(s => s.name));
+        (acct.stocks || []).forEach(s => { if (!names.has(s.name)) existing.stocks.push(s); });
+        // total은 더 큰 값 사용 (마지막 페이지가 전체합계일 수 있음)
+        if (acct.total && (!existing.total || acct.total > existing.total)) existing.total = acct.total;
+        // account_comment는 첫 번째 것 유지
+        if (!existing.account_comment && acct.account_comment) existing.account_comment = acct.account_comment;
+      } else {
+        acct.stocks = acct.stocks || [];
+        // account_comment를 계좌 최상위로 올림
+        const firstStock = acct.stocks.find(s => s.account_comment);
+        acct.account_comment = firstStock?.account_comment || null;
+        mergeMap.set(key, acct);
+      }
+    });
+    _parsedAccounts = Array.from(mergeMap.values());
+
+    // 3) 계좌 순서 정렬: 일반 → 연금저축 → IRP → ISA
+    const ACCT_ORDER = { general: 0, pension_tax: 1, pension_notax: 2, irp: 3, isa: 4 };
+    _parsedAccounts.sort((a, b) => (ACCT_ORDER[a.type] ?? 9) - (ACCT_ORDER[b.type] ?? 9));
+
+    // 4) 총액 보정: total이 없으면 종목 value 합산
+    _parsedAccounts.forEach(acct => {
+      if (!acct.total) {
+        const sum = (acct.stocks || []).reduce((s, x) => s + (Number(x.value) || 0), 0);
+        if (sum > 0) acct.total = sum;
+      }
+    });
+
+    _parsedAiAnalysis = allAnalysis;
 
     if (!_parsedAccounts.length) {
       setImportError('종목을 찾을 수 없습니다.\n\n' + (errors.length ? errors.join('\n') : '이미지에서 계좌/종목 정보를 찾지 못했습니다.'));
@@ -1151,45 +1190,40 @@ function showParseModal() {
   const existing = document.getElementById('parseOverlay');
   if (existing) existing.remove();
 
-  // 전체 비율 계산
+  // ── 전체 비율 계산 (value 기반 정확 계산)
   const totals = { 성장: 0, 배당: 0, 헷지: 0 };
   _parsedAccounts.forEach(acct => {
     (acct.stocks || []).forEach(s => {
-      if (s.value) totals[s.category || '성장'] = (totals[s.category || '성장'] || 0) + s.value;
+      const v = Number(s.value) || 0;
+      if (v > 0) totals[s.category || '성장'] = (totals[s.category || '성장'] || 0) + v;
     });
   });
-  const grandTotal = totals.성장 + totals.배당 + totals.헷지 || 1;
+  const grandTotal = (totals.성장 + totals.배당 + totals.헷지) || 1;
 
-  // 목표 비율 (state.ratios)
+  // 목표 비율
   const tr = state.ratios || { growth: 3, dividend: 4, hedge: 3 };
-  const sum = (tr.growth + tr.dividend + tr.hedge) || 10;
-  const tg = Math.round(tr.growth / sum * 100);
-  const td = Math.round(tr.dividend / sum * 100);
+  const rsum = (Number(tr.growth) + Number(tr.dividend) + Number(tr.hedge)) || 10;
+  const tg = Math.round(Number(tr.growth) / rsum * 100);
+  const td = Math.round(Number(tr.dividend) / rsum * 100);
   const th = 100 - tg - td;
 
-  // 전체 비율 섹션
-  const overallRatioHTML = `
-    <div class="parse-overall-section">
-      <div class="parse-section-title">📊 전체 포트폴리오 비율</div>
-      ${_catRatioBar(totals.성장, totals.배당, totals.헷지, tg, td, th)}
-      <div class="parse-target-note">목표 비율 — 성장 ${tg}% · 배당 ${td}% · 헷지 ${th}%</div>
-    </div>`;
+  const catBadge = c => {
+    const cls = c==='성장'?'asr-cat-growth':c==='배당'?'asr-cat-dividend':'asr-cat-hedge';
+    return `<span class="asr-cat ${cls}">${c}</span>`;
+  };
 
-  // 계좌별 블록
+  // ── 계좌별 블록 (종목 먼저 → 비율 → 계좌분석)
   const acctBlocksHTML = _parsedAccounts.map((acct, ai) => {
     const typeInfo = ACCT_TYPES.find(t => t.id === acct.type) || ACCT_TYPES[4];
     const typeSel  = ACCT_TYPES.map(t =>
       `<button class="btn-parse-type${acct.type === t.id ? ' sel' : ''}" data-ai="${ai}" data-type="${t.id}">${t.label}</button>`
     ).join('');
 
-    // 계좌 내 카테고리 합계
     const ac = { 성장: 0, 배당: 0, 헷지: 0 };
-    (acct.stocks || []).forEach(s => { if (s.value) ac[s.category || '성장'] += s.value; });
-
-    const catBadge = c => {
-      const cls = c==='성장'?'asr-cat-growth':c==='배당'?'asr-cat-dividend':'asr-cat-hedge';
-      return `<span class="asr-cat ${cls}">${c}</span>`;
-    };
+    (acct.stocks || []).forEach(s => {
+      const v = Number(s.value) || 0;
+      if (v > 0) ac[s.category || '성장'] = (ac[s.category || '성장'] || 0) + v;
+    });
 
     const stocksHTML = (acct.stocks || []).map(s => `
       <div class="parse-stock-row">
@@ -1198,6 +1232,9 @@ function showParseModal() {
         ${s.quantity != null ? `<span class="parse-stock-meta">${s.quantity}주</span>` : ''}
         <span class="parse-stock-amt">${s.value != null ? fmt(s.value)+'원' : '-'}</span>
       </div>`).join('');
+
+    const commentHTML = acct.account_comment
+      ? `<div class="parse-acct-comment">💬 ${esc(acct.account_comment)}</div>` : '';
 
     return `
       <div class="parse-acct-block" data-ai="${ai}">
@@ -1208,8 +1245,9 @@ function showParseModal() {
           </span>
           <span class="parse-acct-total">${acct.total != null ? fmt(acct.total)+'원' : ''}</span>
         </div>
-        ${_catRatioBar(ac.성장, ac.배당, ac.헷지, tg, td, th)}
         ${stocksHTML}
+        ${_catRatioBar(ac.성장, ac.배당, ac.헷지, tg, td, th)}
+        ${commentHTML}
         <div class="parse-acct-type-sel">
           <div class="parse-acct-type-label">계좌 유형 확인/수정</div>
           <div class="parse-type-btns">${typeSel}</div>
@@ -1217,10 +1255,17 @@ function showParseModal() {
       </div>`;
   }).join('');
 
-  // AI 분석
+  // ── 전체 비율 + AI 분석 (맨 아래)
+  const overallRatioHTML = `
+    <div class="parse-overall-section">
+      <div class="parse-section-title">📊 전체 포트폴리오 비율</div>
+      ${_catRatioBar(totals.성장, totals.배당, totals.헷지, tg, td, th)}
+      <div class="parse-target-note">목표 비율 — 성장 ${tg}% · 배당 ${td}% · 헷지 ${th}% &nbsp;|&nbsp; 총액 ${fmt(grandTotal)}원</div>
+    </div>`;
+
   const aiHTML = _parsedAiAnalysis ? `
     <div class="parse-ai-section">
-      <div class="parse-section-title">🤖 AI 계좌 분석</div>
+      <div class="parse-section-title">🤖 AI 종합 분석</div>
       <div class="parse-ai-text">${esc(_parsedAiAnalysis)}</div>
     </div>` : '';
 
@@ -1236,10 +1281,9 @@ function showParseModal() {
         <button class="btn-parse-close" id="btnParseClose">×</button>
       </div>
       <div class="parse-modal-body">
+        ${acctBlocksHTML}
         ${overallRatioHTML}
         ${aiHTML}
-        <div class="parse-section-title" style="margin:16px 0 10px">계좌별 상세</div>
-        ${acctBlocksHTML}
       </div>
       <div class="parse-modal-foot">
         <button class="btn-parse-apply" id="btnParseApply">✓ 적용하기 (기존 종목에 추가)</button>
