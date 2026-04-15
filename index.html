@@ -1041,8 +1041,13 @@ async function runImageImport() {
   setImportError('');
 
   const hint = _imgParseAcctHint ? `계좌 유형 힌트: ${ACCT_TYPES.find(t=>t.id===_imgParseAcctHint)?.label || ''}` : '';
-  const prompt = `이 이미지는 한국 증권사 앱/HTS의 보유종목(잔고) 화면 캡처입니다.
+  const totalFiles = _imgParseFiles.length;
+  const prompt = `아래 ${totalFiles}장의 이미지는 한국 증권사 앱/HTS의 보유종목(잔고) 화면 캡처입니다. 여러 계좌가 섞여 있을 수 있고, 한 계좌가 위아래로 잘려 여러 장에 나뉘어 있을 수 있습니다.
 ${hint}
+
+【중요】 이미지를 순서대로 읽어 계좌를 파악하세요:
+- 계좌명/계좌번호/증권사가 동일하거나 연속된 종목 목록이면 같은 계좌로 합쳐서 하나의 account로 출력
+- 분할된 이미지는 종목명·계좌명의 연속성으로 판단 (예: 앞 장 마지막 종목과 뒷 장 첫 종목이 같은 계좌 흐름이면 합산)
 
 다음 정보를 추출해서 JSON으로만 응답해주세요 (설명 없이 JSON만):
 
@@ -1070,7 +1075,6 @@ ${hint}
 - 금액은 콤마 없는 순수 숫자
 - 계좌 유형: IRP/개인형퇴직연금 → irp, ISA/중개형ISA → isa, 연금저축(세액공제/소득공제) → pension_tax, 연금저축(일반/비과세) → pension_notax, 그 외 → general
 - category: 커버드콜 포함 → 배당, 주가지수/나스닥/S&P/성장ETF → 성장, MMF/머니마켓/채권/금/은/원자재/달러 → 헷지
-- 화면이 잘려 같은 계좌가 여러 장에 나뉜 경우 하나의 account로 합쳐서 출력
 - 이미지에서 읽기 어려운 값은 null`;
 
   _parsedAccounts = [];
@@ -1078,22 +1082,53 @@ ${hint}
   const errors = [];
 
   try {
-    for (let i = 0; i < _imgParseFiles.length; i++) {
+    // 모든 이미지를 한 번에 로드
+    btn.innerHTML = `<span class="spinner"></span> 이미지 로딩 중… (${totalFiles}장)`;
+    const imageContents = [];
+    for (let i = 0; i < totalFiles; i++) {
       const file = _imgParseFiles[i];
-      btn.innerHTML = `<span class="spinner"></span> AI 분석 중… (${i+1}/${_imgParseFiles.length})`;
       try {
-        const mediaType = file.type || 'image/jpeg';
+        const mediaType = file.type.startsWith('image/') ? file.type : 'image/jpeg';
         const base64    = await fileToBase64(file);
-        const raw       = await callClaudeWithImage(prompt, base64, mediaType);
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) { errors.push(`${file.name}: JSON 파싱 실패`); continue; }
-        const parsed = JSON.parse(jsonMatch[0]);
-        const accounts = parsed.accounts || [];
-        if (!accounts.length) { errors.push(`${file.name}: 종목 없음`); continue; }
-        _parsedAccounts.push(...accounts);
-        if (parsed.overall_analysis) allAnalysis += (allAnalysis ? ' ' : '') + parsed.overall_analysis;
+        imageContents.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } });
+        imageContents.push({ type: 'text', text: `[이미지 ${i+1}/${totalFiles}: ${file.name}]` });
       } catch(e) {
-        errors.push(`${file.name}: ${e.message}`);
+        errors.push(`${file.name}: 로드 실패 - ${e.message}`);
+      }
+    }
+
+    if (!imageContents.length) {
+      setImportError('이미지를 불러올 수 없습니다.');
+      return;
+    }
+
+    // 이미지가 많으면 5장씩 배치 분할 (토큰 초과 방지), 적으면 한 번에
+    const BATCH = 5;
+    const batches = [];
+    for (let i = 0; i < imageContents.length; i += BATCH * 2) { // 이미지+텍스트 쌍이므로 *2
+      batches.push(imageContents.slice(i, i + BATCH * 2));
+    }
+
+    for (let bi = 0; bi < batches.length; bi++) {
+      const batchContent = [...batches[bi]];
+      batchContent.push({ type: 'text', text: batches.length > 1 ? prompt + `\n\n(이 배치는 전체 ${batches.length}묶음 중 ${bi+1}번째입니다. 이 이미지들에서 계좌/종목을 추출하세요.)` : prompt });
+      btn.innerHTML = `<span class="spinner"></span> AI 분석 중…${batches.length > 1 ? ` (${bi+1}/${batches.length}묶음)` : ` (${totalFiles}장 일괄 분석)`}`;
+      try {
+        const raw = await _callAnthropicAPI({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: batchContent }],
+        });
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          errors.push(`배치 ${bi+1}: JSON 파싱 실패`);
+        } else {
+          const parsed = JSON.parse(jsonMatch[0]);
+          _parsedAccounts.push(...(parsed.accounts || []));
+          if (parsed.overall_analysis) allAnalysis += (allAnalysis ? ' ' : '') + parsed.overall_analysis;
+        }
+      } catch(e) {
+        errors.push(`배치 ${bi+1} 오류: ${e.message}`);
       }
     }
 
