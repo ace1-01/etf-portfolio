@@ -401,6 +401,15 @@
     .btn-parse-type { padding: 4px 10px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: var(--muted); font-size: 11px; font-family: inherit; cursor: pointer; transition: all .15s; }
     .btn-parse-type.sel { border-color: #7dd3fc; background: rgba(79,195,247,0.12); color: #7dd3fc; font-weight: 600; }
     .parse-modal-foot { padding: 0 20px 20px; display: flex; gap: 10px; }
+    .parse-overall-section { background: rgba(79,195,247,0.05); border: 1px solid rgba(79,195,247,0.18); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+    .parse-section-title { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .4px; margin-bottom: 10px; }
+    .parse-ratio-bar-wrap { margin-bottom: 6px; }
+    .parse-ratio-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; margin-bottom: 6px; }
+    .parse-ratio-bar > div { transition: width .4s; }
+    .parse-ratio-labels { display: flex; gap: 12px; font-size: 12px; font-weight: 600; flex-wrap: wrap; }
+    .parse-target-note { font-size: 11px; color: var(--muted); margin-top: 6px; }
+    .parse-ai-section { background: rgba(240,192,64,0.05); border: 1px solid rgba(240,192,64,0.18); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+    .parse-ai-text { font-size: 13px; color: rgba(255,255,255,0.75); line-height: 1.65; white-space: pre-wrap; }
     .btn-parse-apply { flex: 1; background: #7dd3fc; color: #0d1b2a; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; transition: background .2s; }
     .btn-parse-apply:hover { background: #93dcff; }
     .btn-parse-cancel { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: var(--muted); border-radius: 10px; padding: 13px 18px; font-size: 14px; font-family: inherit; cursor: pointer; }
@@ -969,6 +978,7 @@ const ACCT_TYPES = [
 let _imgParseFiles = [];         // 선택된 이미지 파일 목록 (다중)
 let _imgParseAcctHint = null;   // 사용자가 선택한 계좌 유형 힌트
 let _parsedAccounts = [];       // 파싱 결과 (모달에서 수정 가능)
+let _parsedAiAnalysis = '';     // AI 분석 텍스트
 
 function renderImageImportCard() {
   const hint = _imgParseAcctHint;
@@ -1001,10 +1011,10 @@ function renderImageImportCard() {
 
 async function runImageImport() {
   if (!_imgParseFiles.length) return;
-  if (!getApiKey()) { showToast('API 키를 먼저 설정해주세요. (⚙ API 설정)', true); return; }
 
   const btn = document.getElementById('btnRunImport');
   btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 서버 연결 중…';
 
   const hint = _imgParseAcctHint ? `계좌 유형 힌트: ${ACCT_TYPES.find(t=>t.id===_imgParseAcctHint)?.label || ''}` : '';
   const prompt = `이 이미지는 한국 증권사 앱/HTS의 보유종목(잔고) 화면 캡처입니다.
@@ -1023,37 +1033,51 @@ ${hint}
           "name": "종목명",
           "value": 평가금액(숫자),
           "quantity": 보유수량(숫자 또는 null),
-          "ratio": 비중%(숫자 또는 null)
+          "ratio": 비중%(숫자 또는 null),
+          "category": "성장|배당|헷지"
         }
       ]
     }
-  ]
+  ],
+  "ai_analysis": "이 포트폴리오의 계좌 구성과 종목 배분에 대한 전문가 의견 (3~4문장, 한국어)"
 }
 
 주의사항:
 - 금액은 콤마 없는 순수 숫자
-- 계좌 유형 판단: IRP/개인형퇴직연금 → irp, ISA/중개형ISA → isa, 연금저축(세액공제/소득공제) → pension_tax, 연금저축(일반/비과세) → pension_notax, 그 외 → general
+- 계좌 유형: IRP/개인형퇴직연금 → irp, ISA/중개형ISA → isa, 연금저축(세액공제/소득공제) → pension_tax, 연금저축(일반/비과세) → pension_notax, 그 외 → general
+- category 판단: 주가지수/나스닥/S&P/성장ETF → 성장, 배당/리츠/인컴ETF → 배당, 채권/금/달러/원자재 → 헷지
 - 여러 계좌가 보이면 accounts 배열에 각각 추가
 - 이미지에서 읽기 어려운 값은 null`;
 
   _parsedAccounts = [];
+  let aiAnalysis = '';
   let failCount = 0;
 
   for (let i = 0; i < _imgParseFiles.length; i++) {
     const file = _imgParseFiles[i];
-    btn.innerHTML = `<span class="spinner"></span> 분석 중… (${i+1}/${_imgParseFiles.length})`;
+    btn.innerHTML = `<span class="spinner"></span> AI 분석 중… (${i+1}/${_imgParseFiles.length})`;
     try {
       const mediaType = file.type || 'image/jpeg';
       const base64    = await fileToBase64(file);
       const raw       = await callClaudeWithImage(prompt, base64, mediaType);
       const json      = raw.match(/\{[\s\S]*\}/)?.[0];
       if (!json) { failCount++; continue; }
-      const accounts  = JSON.parse(json).accounts || [];
-      _parsedAccounts.push(...accounts);
+      const parsed = JSON.parse(json);
+      _parsedAccounts.push(...(parsed.accounts || []));
+      if (parsed.ai_analysis) aiAnalysis += (aiAnalysis ? ' ' : '') + parsed.ai_analysis;
     } catch(e) {
+      showToast('오류: ' + e.message, true);
       failCount++;
     }
   }
+
+  // guessCategory로 category 보완
+  _parsedAccounts.forEach(acct => {
+    (acct.stocks || []).forEach(s => {
+      if (!s.category) s.category = guessCategory(s.name) || '성장';
+    });
+  });
+  _parsedAiAnalysis = aiAnalysis;
 
   btn.disabled = false;
   btn.innerHTML = '✨ AI로 종목 분석하기';
@@ -1062,23 +1086,80 @@ ${hint}
     showToast('종목을 찾을 수 없습니다. 이미지를 확인해주세요.', true);
     return;
   }
-  if (failCount > 0) showToast(`${failCount}장 분석 실패, 나머지는 정상 처리됐습니다.`, true);
+  if (failCount > 0) showToast(`${failCount}장 분석 실패, 나머지 정상 처리됐습니다.`, true);
   showParseModal();
+}
+
+function _catRatioBar(g, d, h, tg, td, th) {
+  const total = g + d + h || 1;
+  const gp = Math.round(g/total*100), dp = Math.round(d/total*100), hp = 100-gp-dp;
+  const diff = (cur, tgt) => {
+    const v = cur - tgt;
+    return v === 0 ? '' : `<span style="color:${v>0?'#4fc3f7':'#ff6b6b'};font-size:10px;margin-left:3px">${v>0?'+':''}${v}%</span>`;
+  };
+  return `
+    <div class="parse-ratio-bar-wrap">
+      <div class="parse-ratio-bar">
+        <div style="width:${gp}%;background:var(--growth)"></div>
+        <div style="width:${dp}%;background:var(--dividend)"></div>
+        <div style="width:${hp}%;background:var(--hedge)"></div>
+      </div>
+      <div class="parse-ratio-labels">
+        <span style="color:var(--growth)">성장 ${gp}%${diff(gp,tg)}</span>
+        <span style="color:var(--dividend)">배당 ${dp}%${diff(dp,td)}</span>
+        <span style="color:var(--hedge)">헷지 ${hp}%${diff(hp,th)}</span>
+      </div>
+    </div>`;
 }
 
 function showParseModal() {
   const existing = document.getElementById('parseOverlay');
   if (existing) existing.remove();
 
+  // 전체 비율 계산
+  const totals = { 성장: 0, 배당: 0, 헷지: 0 };
+  _parsedAccounts.forEach(acct => {
+    (acct.stocks || []).forEach(s => {
+      if (s.value) totals[s.category || '성장'] = (totals[s.category || '성장'] || 0) + s.value;
+    });
+  });
+  const grandTotal = totals.성장 + totals.배당 + totals.헷지 || 1;
+
+  // 목표 비율 (state.ratios)
+  const tr = state.ratios || { growth: 3, dividend: 4, hedge: 3 };
+  const sum = (tr.growth + tr.dividend + tr.hedge) || 10;
+  const tg = Math.round(tr.growth / sum * 100);
+  const td = Math.round(tr.dividend / sum * 100);
+  const th = 100 - tg - td;
+
+  // 전체 비율 섹션
+  const overallRatioHTML = `
+    <div class="parse-overall-section">
+      <div class="parse-section-title">📊 전체 포트폴리오 비율</div>
+      ${_catRatioBar(totals.성장, totals.배당, totals.헷지, tg, td, th)}
+      <div class="parse-target-note">목표 비율 — 성장 ${tg}% · 배당 ${td}% · 헷지 ${th}%</div>
+    </div>`;
+
+  // 계좌별 블록
   const acctBlocksHTML = _parsedAccounts.map((acct, ai) => {
     const typeInfo = ACCT_TYPES.find(t => t.id === acct.type) || ACCT_TYPES[4];
     const typeSel  = ACCT_TYPES.map(t =>
       `<button class="btn-parse-type${acct.type === t.id ? ' sel' : ''}" data-ai="${ai}" data-type="${t.id}">${t.label}</button>`
     ).join('');
+
+    // 계좌 내 카테고리 합계
+    const ac = { 성장: 0, 배당: 0, 헷지: 0 };
+    (acct.stocks || []).forEach(s => { if (s.value) ac[s.category || '성장'] += s.value; });
+
+    const catBadge = c => {
+      const cls = c==='성장'?'asr-cat-growth':c==='배당'?'asr-cat-dividend':'asr-cat-hedge';
+      return `<span class="asr-cat ${cls}">${c}</span>`;
+    };
+
     const stocksHTML = (acct.stocks || []).map(s => `
       <div class="parse-stock-row">
+        ${catBadge(s.category || '성장')}
         <span class="parse-stock-name">${esc(s.name || '(확인불가)')}</span>
-        ${s.ratio != null ? `<span class="parse-stock-meta">${s.ratio}%</span>` : ''}
         ${s.quantity != null ? `<span class="parse-stock-meta">${s.quantity}주</span>` : ''}
         <span class="parse-stock-amt">${s.value != null ? fmt(s.value)+'원' : '-'}</span>
       </div>`).join('');
@@ -1092,6 +1173,7 @@ function showParseModal() {
           </span>
           <span class="parse-acct-total">${acct.total != null ? fmt(acct.total)+'원' : ''}</span>
         </div>
+        ${_catRatioBar(ac.성장, ac.배당, ac.헷지, tg, td, th)}
         ${stocksHTML}
         <div class="parse-acct-type-sel">
           <div class="parse-acct-type-label">계좌 유형 확인/수정</div>
@@ -1099,6 +1181,13 @@ function showParseModal() {
         </div>
       </div>`;
   }).join('');
+
+  // AI 분석
+  const aiHTML = _parsedAiAnalysis ? `
+    <div class="parse-ai-section">
+      <div class="parse-section-title">🤖 AI 계좌 분석</div>
+      <div class="parse-ai-text">${esc(_parsedAiAnalysis)}</div>
+    </div>` : '';
 
   const totalStocks = _parsedAccounts.reduce((s, a) => s + (a.stocks?.length || 0), 0);
 
@@ -1111,7 +1200,12 @@ function showParseModal() {
         <span class="parse-modal-title">📊 분석 결과 — ${_parsedAccounts.length}개 계좌 · ${totalStocks}개 종목</span>
         <button class="btn-parse-close" id="btnParseClose">×</button>
       </div>
-      <div class="parse-modal-body">${acctBlocksHTML}</div>
+      <div class="parse-modal-body">
+        ${overallRatioHTML}
+        ${aiHTML}
+        <div class="parse-section-title" style="margin:16px 0 10px">계좌별 상세</div>
+        ${acctBlocksHTML}
+      </div>
       <div class="parse-modal-foot">
         <button class="btn-parse-apply" id="btnParseApply">✓ 적용하기 (기존 종목에 추가)</button>
         <button class="btn-parse-cancel" id="btnParseCancel">취소</button>
@@ -1120,7 +1214,6 @@ function showParseModal() {
 
   document.body.appendChild(overlay);
 
-  // 계좌 유형 변경
   overlay.querySelectorAll('.btn-parse-type').forEach(btn => {
     btn.addEventListener('click', () => {
       const ai = parseInt(btn.dataset.ai);
