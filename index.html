@@ -348,14 +348,21 @@
     .img-drop-icon { font-size: 28px; margin-bottom: 8px; }
     .img-drop-text { font-size: 13px; color: #7dd3fc; font-weight: 500; }
     .img-drop-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
-    .img-preview-wrap { position: relative; display: block; }
+    .img-import-card.drag-over-card { border-color: #7dd3fc; background: rgba(79,195,247,0.06); }
+    .img-preview-wrap { display: block; }
     .img-preview { max-width: 100%; max-height: 160px; border-radius: 8px; border: 1px solid rgba(79,195,247,0.3); display: block; }
-    .img-thumb-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+    .img-thumb-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0; }
     .img-thumb-item { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-    .img-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(79,195,247,0.35); }
+    .img-thumb-wrap { position: relative; }
+    .img-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(79,195,247,0.35); display: block; }
+    .btn-thumb-del { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; background: rgba(255,80,80,0.85); border: none; color: white; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
     .img-thumb-name { font-size: 10px; color: var(--muted); max-width: 72px; text-align: center; overflow: hidden; }
-    .img-preview-info { font-size: 12px; color: #7dd3fc; margin: 4px 0 6px; }
-    .btn-img-clear { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15); color: var(--muted); border-radius: 8px; padding: 6px 14px; font-size: 12px; font-family: inherit; cursor: pointer; transition: background .2s; }
+    .img-preview-footer { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+    .img-preview-info { font-size: 12px; color: #7dd3fc; flex: 1; }
+    .btn-img-add { background: rgba(79,195,247,0.1); border: 1px solid rgba(79,195,247,0.35); color: #7dd3fc; border-radius: 8px; padding: 5px 12px; font-size: 12px; font-family: inherit; cursor: pointer; transition: background .2s; }
+    .btn-img-add:hover { background: rgba(79,195,247,0.2); }
+    .btn-img-clear { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); color: var(--muted); border-radius: 8px; padding: 5px 12px; font-size: 12px; font-family: inherit; cursor: pointer; transition: background .2s; }
+    .btn-img-clear:hover { background: rgba(255,80,80,0.1); color: var(--danger); }
     .img-acct-select { margin-top: 10px; }
     .img-acct-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
     .img-acct-btns { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -979,7 +986,7 @@ function renderImageImportCard() {
           <div class="img-drop-icon">🖼️</div>
           <div class="img-drop-text">이미지를 드래그하거나 클릭해서 선택</div>
           <div class="img-drop-sub">여러 장 동시 선택 가능 · JPG · PNG · WEBP 지원</div>
-          <input type="file" id="imgFileInput" accept="image/jpeg,image/png,image/webp,image/gif" multiple style="display:none">
+          <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
         </div>
       </div>
 
@@ -1163,25 +1170,47 @@ function applyParsedData() {
   showToast(`✓ ${addedCount}개 종목이 추가되었습니다.`);
 }
 
+function isImageFile(f) {
+  return f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|heic)$/i.test(f.name);
+}
+
 function bindImageImport() {
-  const dropZone = document.getElementById('imgDropZone');
-  const fileInput = document.getElementById('imgFileInput');
-  const runBtn    = document.getElementById('btnRunImport');
+  const card    = document.getElementById('imgImportCard');
+  const runBtn  = document.getElementById('btnRunImport');
+  if (!card) return;
 
-  if (!dropZone) return;
-
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault(); dropZone.classList.remove('drag-over');
-    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-    if (files.length) setImportFiles(files);
+  // 카드 전체를 드롭 대상으로
+  card.addEventListener('dragover',  e => { e.preventDefault(); card.classList.add('drag-over-card'); });
+  card.addEventListener('dragleave', e => { if (!card.contains(e.relatedTarget)) card.classList.remove('drag-over-card'); });
+  card.addEventListener('drop', e => {
+    e.preventDefault(); card.classList.remove('drag-over-card');
+    const newFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
+    if (newFiles.length) addImportFiles(newFiles);
   });
 
-  fileInput.addEventListener('change', e => {
-    const files = Array.from(e.target.files);
-    if (files.length) setImportFiles(files);
+  // 드롭존 클릭
+  const dropZone = document.getElementById('imgDropZone');
+  if (dropZone) {
+    dropZone.addEventListener('click', () => document.getElementById('imgFileInput').click());
+  }
+
+  card.addEventListener('click', e => {
+    if (e.target.id === 'btnImgAdd') document.getElementById('imgFileInput').click();
+    if (e.target.id === 'btnImgClear') {
+      _imgParseFiles = [];
+      renderImportPreview();
+    }
+    if (e.target.closest('.btn-thumb-del')) {
+      const idx = parseInt(e.target.closest('.btn-thumb-del').dataset.idx);
+      _imgParseFiles = _imgParseFiles.filter((_, i) => i !== idx);
+      renderImportPreview();
+    }
+  });
+
+  document.getElementById('imgFileInput').addEventListener('change', e => {
+    const newFiles = Array.from(e.target.files).filter(isImageFile);
+    if (newFiles.length) addImportFiles(newFiles);
+    e.target.value = '';
   });
 
   document.getElementById('imgAcctBtns').addEventListener('click', e => {
@@ -1194,30 +1223,67 @@ function bindImageImport() {
   runBtn.addEventListener('click', runImageImport);
 }
 
-function setImportFiles(files) {
-  _imgParseFiles = files;
-  const wrap = document.getElementById('imgDropZoneWrap');
-  const urls = files.map(f => URL.createObjectURL(f));
+function addImportFiles(newFiles) {
+  // 중복 제거 (같은 이름+크기)
+  const existing = new Set(_imgParseFiles.map(f => f.name + f.size));
+  newFiles.forEach(f => { if (!existing.has(f.name + f.size)) _imgParseFiles.push(f); });
+  renderImportPreview();
+}
 
-  const thumbs = files.map((f, i) => `
-    <div class="img-thumb-item">
-      <img class="img-thumb" src="${urls[i]}" alt="${esc(f.name)}">
-      <div class="img-thumb-name">${esc(f.name.length > 14 ? f.name.slice(0,12)+'…' : f.name)}</div>
-    </div>`).join('');
+function renderImportPreview() {
+  const wrap   = document.getElementById('imgDropZoneWrap');
+  const runBtn = document.getElementById('btnRunImport');
+  if (!wrap) return;
+
+  if (!_imgParseFiles.length) {
+    wrap.innerHTML = `
+      <div class="img-drop-zone" id="imgDropZone">
+        <div class="img-drop-icon">🖼️</div>
+        <div class="img-drop-text">이미지를 드래그하거나 클릭해서 선택</div>
+        <div class="img-drop-sub">여러 장 동시 선택 가능 · JPG · PNG · WEBP 지원</div>
+        <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
+      </div>`;
+    const dz = document.getElementById('imgDropZone');
+    dz.addEventListener('click', () => document.getElementById('imgFileInput').click());
+    document.getElementById('imgFileInput').addEventListener('change', e => {
+      const newFiles = Array.from(e.target.files).filter(isImageFile);
+      if (newFiles.length) addImportFiles(newFiles);
+      e.target.value = '';
+    });
+    if (runBtn) runBtn.disabled = true;
+    return;
+  }
+
+  const thumbs = _imgParseFiles.map((f, i) => {
+    const url = URL.createObjectURL(f);
+    const name = f.name.length > 12 ? f.name.slice(0, 10) + '…' : f.name;
+    return `<div class="img-thumb-item">
+      <div class="img-thumb-wrap">
+        <img class="img-thumb" src="${url}" alt="">
+        <button class="btn-thumb-del" data-idx="${i}" title="제거">×</button>
+      </div>
+      <div class="img-thumb-name">${esc(name)}</div>
+    </div>`;
+  }).join('');
 
   wrap.innerHTML = `
     <div class="img-preview-wrap">
       <div class="img-thumb-list">${thumbs}</div>
-      <div class="img-preview-info">${files.length}장 선택됨</div>
-      <button class="btn-img-clear" id="btnImgClear">× 다시 선택</button>
+      <div class="img-preview-footer">
+        <span class="img-preview-info">${_imgParseFiles.length}장 선택됨</span>
+        <button class="btn-img-add" id="btnImgAdd">+ 추가</button>
+        <button class="btn-img-clear" id="btnImgClear">전체 삭제</button>
+        <input type="file" id="imgFileInput" accept="image/*" multiple style="display:none">
+      </div>
     </div>`;
 
-  document.getElementById('btnImgClear').onclick = () => {
-    _imgParseFiles = [];
-    urls.forEach(u => URL.revokeObjectURL(u));
-    renderStep(false);
-  };
-  document.getElementById('btnRunImport').disabled = false;
+  document.getElementById('imgFileInput').addEventListener('change', e => {
+    const newFiles = Array.from(e.target.files).filter(isImageFile);
+    if (newFiles.length) addImportFiles(newFiles);
+    e.target.value = '';
+  });
+
+  if (runBtn) runBtn.disabled = false;
 }
 
 /* ══════════════════════════════════════════
