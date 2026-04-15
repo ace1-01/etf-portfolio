@@ -1006,7 +1006,15 @@ function renderImageImportCard() {
       </div>
 
       <button class="btn-import-run" id="btnRunImport" disabled>✨ AI로 종목 분석하기</button>
+      <div id="importErrorBox" style="display:none;margin-top:10px;padding:11px 13px;background:rgba(255,80,80,0.08);border:1px solid rgba(255,107,107,0.35);border-radius:10px;font-size:12px;color:#ff9999;line-height:1.55;white-space:pre-wrap"></div>
     </div>`;
+}
+
+function setImportError(msg) {
+  const box = document.getElementById('importErrorBox');
+  if (!box) return;
+  if (msg) { box.textContent = msg; box.style.display = 'block'; }
+  else      { box.style.display = 'none'; }
 }
 
 async function runImageImport() {
@@ -1015,6 +1023,7 @@ async function runImageImport() {
   const btn = document.getElementById('btnRunImport');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> 서버 연결 중…';
+  setImportError('');
 
   const hint = _imgParseAcctHint ? `계좌 유형 힌트: ${ACCT_TYPES.find(t=>t.id===_imgParseAcctHint)?.label || ''}` : '';
   const prompt = `이 이미지는 한국 증권사 앱/HTS의 보유종목(잔고) 화면 캡처입니다.
@@ -1051,43 +1060,56 @@ ${hint}
 
   _parsedAccounts = [];
   let aiAnalysis = '';
-  let failCount = 0;
+  const errors = [];
 
-  for (let i = 0; i < _imgParseFiles.length; i++) {
-    const file = _imgParseFiles[i];
-    btn.innerHTML = `<span class="spinner"></span> AI 분석 중… (${i+1}/${_imgParseFiles.length})`;
-    try {
-      const mediaType = file.type || 'image/jpeg';
-      const base64    = await fileToBase64(file);
-      const raw       = await callClaudeWithImage(prompt, base64, mediaType);
-      const json      = raw.match(/\{[\s\S]*\}/)?.[0];
-      if (!json) { failCount++; continue; }
-      const parsed = JSON.parse(json);
-      _parsedAccounts.push(...(parsed.accounts || []));
-      if (parsed.ai_analysis) aiAnalysis += (aiAnalysis ? ' ' : '') + parsed.ai_analysis;
-    } catch(e) {
-      showToast('오류: ' + e.message, true);
-      failCount++;
+  try {
+    for (let i = 0; i < _imgParseFiles.length; i++) {
+      const file = _imgParseFiles[i];
+      btn.innerHTML = `<span class="spinner"></span> AI 분석 중… (${i+1}/${_imgParseFiles.length})`;
+      try {
+        const mediaType = file.type || 'image/jpeg';
+        const base64    = await fileToBase64(file);
+        const raw       = await callClaudeWithImage(prompt, base64, mediaType);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) { errors.push(`${file.name}: JSON 파싱 실패`); continue; }
+        const parsed = JSON.parse(jsonMatch[0]);
+        const accounts = parsed.accounts || [];
+        if (!accounts.length) { errors.push(`${file.name}: 종목 없음`); continue; }
+        _parsedAccounts.push(...accounts);
+        if (parsed.ai_analysis) aiAnalysis += (aiAnalysis ? ' ' : '') + parsed.ai_analysis;
+      } catch(e) {
+        errors.push(`${file.name}: ${e.message}`);
+      }
     }
-  }
 
-  // guessCategory로 category 보완
-  _parsedAccounts.forEach(acct => {
-    (acct.stocks || []).forEach(s => {
-      if (!s.category) s.category = guessCategory(s.name) || '성장';
+    // category 보완
+    _parsedAccounts.forEach(acct => {
+      (acct.stocks || []).forEach(s => {
+        const cat = s.category || '';
+        if (!['성장','배당','헷지'].includes(cat)) {
+          s.category = guessCategory(s.name) || '성장';
+        }
+      });
     });
-  });
-  _parsedAiAnalysis = aiAnalysis;
+    _parsedAiAnalysis = aiAnalysis;
 
-  btn.disabled = false;
-  btn.innerHTML = '✨ AI로 종목 분석하기';
+    if (!_parsedAccounts.length) {
+      setImportError('종목을 찾을 수 없습니다.\n\n' + errors.join('\n'));
+      return;
+    }
 
-  if (!_parsedAccounts.length) {
-    showToast('종목을 찾을 수 없습니다. 이미지를 확인해주세요.', true);
-    return;
+    if (errors.length) setImportError(`${errors.length}장 분석 실패:\n` + errors.join('\n'));
+
+    try {
+      showParseModal();
+    } catch(e) {
+      setImportError('결과 표시 오류: ' + e.message);
+    }
+
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '✨ AI로 종목 분석하기';
   }
-  if (failCount > 0) showToast(`${failCount}장 분석 실패, 나머지 정상 처리됐습니다.`, true);
-  showParseModal();
 }
 
 function _catRatioBar(g, d, h, tg, td, th) {
