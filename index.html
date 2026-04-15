@@ -1559,7 +1559,7 @@ function searchLocalStocks(q, limit = 8) {
 // 배포 후: Railway 도메인으로 교체 (예: 'https://my-app.railway.app')
 const KIS_API = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   ? 'http://localhost:5000'
-  : 'https://YOUR-APP.railway.app';  // ← Railway 도메인으로 교체
+  : 'https://etf-portfolio-sstc.onrender.com';
 
 async function fetchHoldings() {
   const btn = document.getElementById('btnKisImport');
