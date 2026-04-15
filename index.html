@@ -411,6 +411,12 @@
     .parse-ai-section { background: rgba(240,192,64,0.05); border: 1px solid rgba(240,192,64,0.18); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
     .parse-ai-text { font-size: 13px; color: rgba(255,255,255,0.75); line-height: 1.65; white-space: pre-wrap; }
     .parse-acct-comment { margin-top: 8px; font-size: 12px; color: rgba(240,192,64,0.8); line-height: 1.5; padding: 8px 10px; background: rgba(240,192,64,0.05); border-radius: 8px; }
+    .parse-reg-banner { background: rgba(74,222,128,0.07); border: 1px solid rgba(74,222,128,0.3); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+    .parse-reg-title { font-size: 14px; font-weight: 700; color: #4ade80; margin-bottom: 6px; }
+    .parse-reg-stats { font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 8px; }
+    .parse-reg-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .reg-stock-chip { font-size: 11px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 3px 9px; display: flex; align-items: center; gap: 4px; }
+    .reg-stock-chip em { font-style: normal; color: var(--muted); font-size: 10px; }
     .btn-parse-apply { flex: 1; background: #7dd3fc; color: #0d1b2a; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; transition: background .2s; }
     .btn-parse-apply:hover { background: #93dcff; }
     .btn-parse-cancel { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: var(--muted); border-radius: 10px; padding: 13px 18px; font-size: 14px; font-family: inherit; cursor: pointer; }
@@ -1143,15 +1149,17 @@ ${hint}
     }
 
     const totalStocksFound = _parsedAccounts.reduce((s, a) => s + (a.stocks?.length || 0), 0);
-    setImportStatus(`✓ ${_parsedAccounts.length}개 계좌 · ${totalStocksFound}개 종목 분석 완료 — 결과창 표시 중…`);
+    setImportStatus(`✓ ${_parsedAccounts.length}개 계좌 · ${totalStocksFound}개 종목 분석 완료 — 종목 등록 중…`);
 
     if (errors.length) console.warn('[import] 일부 실패:', errors);
 
-    // 잠깐 화면 업데이트 후 모달 오픈 (렌더링 타이밍)
+    // 자동 종목 등록
+    const result = applyParsedData();
+
     await new Promise(r => setTimeout(r, 50));
 
     try {
-      showParseModal();
+      showParseModal(result);
       setImportStatus('');
     } catch(e) {
       console.error('[import] showParseModal 오류:', e);
@@ -1186,7 +1194,7 @@ function _catRatioBar(g, d, h, tg, td, th) {
     </div>`;
 }
 
-function showParseModal() {
+function showParseModal(applyResult) {
   const existing = document.getElementById('parseOverlay');
   if (existing) existing.remove();
 
@@ -1271,6 +1279,23 @@ function showParseModal() {
 
   const totalStocks = _parsedAccounts.reduce((s, a) => s + (a.stocks?.length || 0), 0);
 
+  // 등록 결과 요약 배너
+  let registerBannerHTML = '';
+  if (applyResult) {
+    const { addedCount, skippedCount, addedStocks } = applyResult;
+    const codeFound  = addedStocks.filter(s => s.code).length;
+    const codeBlank  = addedStocks.filter(s => !s.code).length;
+    const stockLines = addedStocks.map(s =>
+      `<span class="reg-stock-chip">${esc(s.name)}${s.code ? ` <em>${s.code}</em>` : ''} <span class="asr-cat ${s.category==='성장'?'asr-cat-growth':s.category==='배당'?'asr-cat-dividend':'asr-cat-hedge'}">${s.category}</span></span>`
+    ).join('');
+    registerBannerHTML = `
+      <div class="parse-reg-banner">
+        <div class="parse-reg-title">✅ 종목 자동 등록 완료</div>
+        <div class="parse-reg-stats">${addedCount}개 추가 · 코드 확인 ${codeFound}개 · 코드 미확인 ${codeBlank}개${skippedCount ? ` · 중복 제외 ${skippedCount}개` : ''}</div>
+        ${addedCount ? `<div class="parse-reg-list">${stockLines}</div>` : ''}
+      </div>`;
+  }
+
   const overlay = document.createElement('div');
   overlay.id        = 'parseOverlay';
   overlay.className = 'parse-overlay';
@@ -1281,13 +1306,13 @@ function showParseModal() {
         <button class="btn-parse-close" id="btnParseClose">×</button>
       </div>
       <div class="parse-modal-body">
+        ${registerBannerHTML}
         ${acctBlocksHTML}
         ${overallRatioHTML}
         ${aiHTML}
       </div>
       <div class="parse-modal-foot">
-        <button class="btn-parse-apply" id="btnParseApply">✓ 적용하기 (기존 종목에 추가)</button>
-        <button class="btn-parse-cancel" id="btnParseCancel">취소</button>
+        <button class="btn-parse-apply" id="btnParseApply">닫기</button>
       </div>
     </div>`;
 
@@ -1305,33 +1330,39 @@ function showParseModal() {
     });
   });
 
-  document.getElementById('btnParseClose').onclick  = () => overlay.remove();
-  document.getElementById('btnParseCancel').onclick = () => overlay.remove();
-  document.getElementById('btnParseApply').onclick  = () => { applyParsedData(); overlay.remove(); };
+  document.getElementById('btnParseClose').onclick = () => overlay.remove();
+  document.getElementById('btnParseApply').onclick  = () => overlay.remove();
 }
 
 function applyParsedData() {
-  let addedCount = 0;
+  let addedCount = 0, skippedCount = 0;
+  const addedStocks = []; // {name, code, category} 기록용
+
   _parsedAccounts.forEach(acct => {
     (acct.stocks || []).forEach(s => {
       if (!s.name) return;
-      const name  = s.name.trim();
-      const value = s.value ? String(Math.round(s.value)) : '';
-      const cat   = guessCategory(name) || '성장';
-      // 같은 종목명이 없을 때만 추가
+      const name     = s.name.trim();
+      const cat      = s.category || guessCategory(name) || '성장';
+      const value    = s.value    ? String(Math.round(Number(s.value)))    : '';
+      const quantity = s.quantity ? Math.round(Number(s.quantity)) : 0;
+      const code     = findCodeByName(name); // 자동 코드 매칭
+
       if (!state.stocks.find(x => x.name === name)) {
         state.stocks.push({
-          id: uid(), name, code: '', quantity: s.quantity || 0,
+          id: uid(), name, code, quantity,
           value, dividendRate: '', isSafe: false, category: cat, aiReason: '',
         });
+        addedStocks.push({ name, code, category: cat });
         addedCount++;
+      } else {
+        skippedCount++;
       }
     });
 
-    // 절세계좌 납입금 반영 (계좌 총액을 기여금란에 채움)
+    // 절세계좌 납입금 반영
     const typeInfo = ACCT_TYPES.find(t => t.id === acct.type);
     if (typeInfo?.stateKey && acct.total) {
-      const monthlyGuess = Math.round(acct.total / 12);
+      const monthlyGuess = Math.round(Number(acct.total) / 12);
       state.taxAccounts[typeInfo.stateKey].contribution = String(monthlyGuess);
     }
   });
@@ -1339,7 +1370,7 @@ function applyParsedData() {
   savePortfolioToSupabase?.();
   save();
   renderStep(false);
-  showToast(`✓ ${addedCount}개 종목이 추가되었습니다.`);
+  return { addedCount, skippedCount, addedStocks };
 }
 
 function isImageFile(f) {
@@ -1792,6 +1823,18 @@ function getMergedStockDB() {
     ...getStockCache(),
     ...Object.fromEntries(state.stocks.filter(s => s.code && s.name).map(s => [s.code, s.name])),
   };
+}
+
+// 종목명으로 코드 검색 (점수 65이상인 경우만 반환)
+function findCodeByName(name) {
+  if (!name) return '';
+  const db = getMergedStockDB();
+  let bestCode = '', bestScore = 0;
+  for (const [code, stockName] of Object.entries(db)) {
+    const score = _fuzzyScore(stockName, name);
+    if (score > bestScore) { bestScore = score; bestCode = code; }
+  }
+  return bestScore >= 65 ? bestCode : '';
 }
 
 function searchLocalStocks(q, limit = 8) {
