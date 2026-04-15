@@ -1010,12 +1010,17 @@ function renderImageImportCard() {
     </div>`;
 }
 
-function setImportError(msg) {
+function setImportStatus(msg, isError) {
   const box = document.getElementById('importErrorBox');
-  if (!box) return;
-  if (msg) { box.textContent = msg; box.style.display = 'block'; }
-  else      { box.style.display = 'none'; }
+  if (!box) { console.warn('[import] importErrorBox 없음, msg=', msg); return; }
+  if (!msg) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  box.style.color = isError ? '#ff9999' : '#86efac';
+  box.style.borderColor = isError ? 'rgba(255,107,107,0.35)' : 'rgba(74,222,128,0.35)';
+  box.style.background = isError ? 'rgba(255,80,80,0.08)' : 'rgba(74,222,128,0.06)';
+  box.textContent = msg;
 }
+function setImportError(msg) { setImportStatus(msg, true); }
 
 async function runImageImport() {
   if (!_imgParseFiles.length) return;
@@ -1094,16 +1099,24 @@ ${hint}
     _parsedAiAnalysis = aiAnalysis;
 
     if (!_parsedAccounts.length) {
-      setImportError('종목을 찾을 수 없습니다.\n\n' + errors.join('\n'));
+      setImportError('종목을 찾을 수 없습니다.\n\n' + (errors.length ? errors.join('\n') : '이미지에서 계좌/종목 정보를 찾지 못했습니다.'));
       return;
     }
 
-    if (errors.length) setImportError(`${errors.length}장 분석 실패:\n` + errors.join('\n'));
+    const totalStocksFound = _parsedAccounts.reduce((s, a) => s + (a.stocks?.length || 0), 0);
+    setImportStatus(`✓ ${_parsedAccounts.length}개 계좌 · ${totalStocksFound}개 종목 분석 완료 — 결과창 표시 중…`);
+
+    if (errors.length) console.warn('[import] 일부 실패:', errors);
+
+    // 잠깐 화면 업데이트 후 모달 오픈 (렌더링 타이밍)
+    await new Promise(r => setTimeout(r, 50));
 
     try {
       showParseModal();
+      setImportStatus('');
     } catch(e) {
-      setImportError('결과 표시 오류: ' + e.message);
+      console.error('[import] showParseModal 오류:', e);
+      setImportError('결과 표시 오류: ' + e.message + '\n\n브라우저 콘솔(F12)에서 상세 확인 가능');
     }
 
   } finally {
