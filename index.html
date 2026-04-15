@@ -1330,13 +1330,17 @@ function showParseModal(applyResult) {
     });
   });
 
-  document.getElementById('btnParseClose').onclick = () => overlay.remove();
-  document.getElementById('btnParseApply').onclick  = () => overlay.remove();
+  const closeModal = () => { overlay.remove(); renderStep(false); };
+  document.getElementById('btnParseClose').onclick = closeModal;
+  document.getElementById('btnParseApply').onclick  = closeModal;
 }
 
 function applyParsedData() {
   let addedCount = 0, skippedCount = 0;
   const addedStocks = []; // {name, code, category} 기록용
+
+  // DB를 한 번만 빌드해서 25개 종목 루프에서 재사용
+  const db = getMergedStockDB();
 
   _parsedAccounts.forEach(acct => {
     (acct.stocks || []).forEach(s => {
@@ -1345,7 +1349,7 @@ function applyParsedData() {
       const cat      = s.category || guessCategory(name) || '성장';
       const value    = s.value    ? String(Math.round(Number(s.value)))    : '';
       const quantity = s.quantity ? Math.round(Number(s.quantity)) : 0;
-      const code     = findCodeByName(name); // 자동 코드 매칭
+      const code     = findCodeByName(name, db); // 공유 db로 코드 매칭
 
       if (!state.stocks.find(x => x.name === name)) {
         state.stocks.push({
@@ -1369,7 +1373,8 @@ function applyParsedData() {
 
   savePortfolioToSupabase?.();
   save();
-  renderStep(false);
+  // renderStep(false) 제거 — 전체 DOM 재렌더가 메인 스레드를 수 분간 블로킹하던 원인
+  // 모달 닫기 후 필요 시 renderStep이 호출됨
   return { addedCount, skippedCount, addedStocks };
 }
 
@@ -1825,14 +1830,15 @@ function getMergedStockDB() {
   };
 }
 
-// 종목명으로 코드 검색 (점수 65이상인 경우만 반환)
-function findCodeByName(name) {
+// 종목명으로 코드 검색 (db를 외부에서 전달해 재사용)
+function findCodeByName(name, db) {
   if (!name) return '';
-  const db = getMergedStockDB();
+  if (!db) db = getMergedStockDB();
   let bestCode = '', bestScore = 0;
   for (const [code, stockName] of Object.entries(db)) {
     const score = _fuzzyScore(stockName, name);
     if (score > bestScore) { bestScore = score; bestCode = code; }
+    if (bestScore === 100) break; // 완전일치면 바로 종료
   }
   return bestScore >= 65 ? bestCode : '';
 }
