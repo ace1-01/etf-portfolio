@@ -419,7 +419,20 @@
     .reg-stock-chip em { font-style: normal; color: var(--muted); font-size: 10px; }
     .btn-parse-apply { flex: 1; background: #7dd3fc; color: #0d1b2a; border: none; border-radius: 10px; padding: 13px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; transition: background .2s; }
     .btn-parse-apply:hover { background: #93dcff; }
+    .btn-parse-list { background: rgba(240,192,64,0.12); border: 1px solid rgba(240,192,64,0.35); color: var(--gold); border-radius: 10px; padding: 13px 14px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; white-space: nowrap; transition: background .2s; }
+    .btn-parse-list:hover { background: rgba(240,192,64,0.22); }
     .btn-parse-cancel { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); color: var(--muted); border-radius: 10px; padding: 13px 18px; font-size: 14px; font-family: inherit; cursor: pointer; }
+    /* ── 등록 종목 조회 패널 ── */
+    .sl-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 3100; display: flex; align-items: flex-end; justify-content: center; }
+    .sl-panel { background: #112240; border-radius: 18px 18px 0 0; width: 100%; max-width: 480px; max-height: 70vh; display: flex; flex-direction: column; }
+    .sl-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 12px; font-size: 14px; font-weight: 700; color: var(--gold); border-bottom: 1px solid rgba(255,255,255,.08); }
+    .sl-close { background: none; border: none; color: #aaa; font-size: 22px; cursor: pointer; line-height: 1; padding: 0 4px; }
+    .sl-body { overflow-y: auto; padding: 10px 14px 20px; }
+    .sl-row { display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-bottom: 1px solid rgba(255,255,255,.05); font-size: 13px; }
+    .sl-name { flex: 1; color: rgba(255,255,255,.88); }
+    .sl-code { font-size: 11px; color: var(--muted); background: rgba(255,255,255,.06); border-radius: 4px; padding: 2px 6px; }
+    .sl-no-code { color: rgba(255,100,100,.7); background: rgba(255,100,100,.08); }
+    .sl-val { font-size: 12px; color: rgba(255,255,255,.5); white-space: nowrap; }
 
     /* ── Profile Screen (Step 0) ── */
     .profile-hero { text-align: center; padding: 32px 0 28px; }
@@ -1348,6 +1361,7 @@ function showParseModal(applyResult) {
         ${aiHTML}
       </div>
       <div class="parse-modal-foot">
+        <button class="btn-parse-list" id="btnParseList">📋 등록된 종목 조회 (${state.stocks.length}개)</button>
         <button class="btn-parse-apply" id="btnParseApply">닫기</button>
       </div>
     </div>`;
@@ -1369,51 +1383,79 @@ function showParseModal(applyResult) {
   const closeModal = () => { overlay.remove(); renderStep(false); };
   document.getElementById('btnParseClose').onclick = closeModal;
   document.getElementById('btnParseApply').onclick  = closeModal;
+
+  document.getElementById('btnParseList').onclick = () => {
+    const existing = document.getElementById('stockListOverlay');
+    if (existing) { existing.remove(); return; }
+    const catCls = c => c==='성장'?'asr-cat-growth':c==='배당'?'asr-cat-dividend':'asr-cat-hedge';
+    const rows = state.stocks.map(s => `
+      <div class="sl-row">
+        <span class="asr-cat ${catCls(s.category)}">${s.category||'성장'}</span>
+        <span class="sl-name">${esc(s.name)}</span>
+        ${s.code ? `<span class="sl-code">${esc(s.code)}</span>` : '<span class="sl-code sl-no-code">코드미확인</span>'}
+        <span class="sl-val">${s.value ? fmt(s.value)+'원' : '-'}</span>
+      </div>`).join('');
+    const panel = document.createElement('div');
+    panel.id = 'stockListOverlay';
+    panel.className = 'sl-overlay';
+    panel.innerHTML = `
+      <div class="sl-panel">
+        <div class="sl-head">
+          <span>등록된 종목 전체 (${state.stocks.length}개)</span>
+          <button class="sl-close" id="btnSlClose">×</button>
+        </div>
+        <div class="sl-body">${rows || '<div style="padding:16px;color:#aaa">등록된 종목이 없습니다</div>'}</div>
+      </div>`;
+    document.body.appendChild(panel);
+    document.getElementById('btnSlClose').onclick = () => panel.remove();
+    panel.addEventListener('click', e => { if (e.target === panel) panel.remove(); });
+  };
 }
 
 async function applyParsedData() {
   let addedCount = 0, skippedCount = 0;
   const addedStocks = []; // {name, code, category} 기록용
 
-  // 전체 종목 평탄화 (중복 체크용 미리 계산)
+  // 전체 종목 평탄화
   const allStocks = [];
   _parsedAccounts.forEach(acct => {
     (acct.stocks || []).forEach(s => { if (s.name) allStocks.push({ acct, s }); });
   });
-  const totalCount = allStocks.length;
 
-  // 중복 미리 세기 (이미 등록된 이름)
-  const dupNames = new Set(allStocks.map(({s}) => s.name.trim()).filter(n => state.stocks.find(x => x.name === n)));
-  const toAddCount = totalCount - dupNames.size;
+  // 기존 등록 이름을 Set으로 관리 (매번 find 대신 O(1) 조회)
+  const registeredNames = new Set(state.stocks.map(x => x.name));
+  const dupCount = allStocks.filter(({s}) => registeredNames.has(s.name.trim())).length;
+  const toAddCount = allStocks.length - dupCount;
 
-  setImportStatus(`종목 등록 중… 중복 ${dupNames.size}개 제외, ${toAddCount}개 등록 예정`);
-  await new Promise(r => setTimeout(r, 0)); // UI 업데이트 허용
+  setImportStatus(`종목 등록 중… 중복 ${dupCount}개 제외, ${toAddCount}개 등록 예정`);
+  await new Promise(r => setTimeout(r, 16)); // 한 프레임 양보
 
-  // DB를 한 번만 빌드해서 전체 루프에서 재사용
+  // DB를 한 번만 빌드 (fuzzy 코드 매칭용)
   const db = getMergedStockDB();
   setImportStatus(`종목 등록 중… (0 / ${toAddCount})`);
-  await new Promise(r => setTimeout(r, 0));
+  await new Promise(r => setTimeout(r, 16));
 
   let processed = 0;
-  for (const { acct, s } of allStocks) {
-    const name     = s.name.trim();
-    const cat      = s.category || guessCategory(name) || '성장';
-    const value    = s.value    ? String(Math.round(Number(s.value)))    : '';
-    const quantity = s.quantity ? Math.round(Number(s.quantity)) : 0;
+  for (const { s } of allStocks) {
+    try {
+      const name = s.name.trim();
+      if (registeredNames.has(name)) { skippedCount++; continue; }
 
-    if (!state.stocks.find(x => x.name === name)) {
-      const code = findCodeByName(name, db);
-      state.stocks.push({
-        id: uid(), name, code, quantity,
-        value, dividendRate: '', isSafe: false, category: cat, aiReason: '',
-      });
+      const cat      = s.category || guessCategory(name) || '성장';
+      const value    = s.value    ? String(Math.round(Number(s.value)))    : '';
+      const quantity = s.quantity ? Math.round(Number(s.quantity)) : 0;
+      const code     = findCodeByName(name, db);
+
+      state.stocks.push({ id: uid(), name, code, quantity, value, dividendRate: '', isSafe: false, category: cat, aiReason: '' });
+      registeredNames.add(name); // Set도 갱신
       addedStocks.push({ name, code, category: cat });
       addedCount++;
       processed++;
-      // 매 종목마다 UI 업데이트 (브라우저 렌더 허용)
+
       setImportStatus(`종목 등록 중… (${processed} / ${toAddCount}) — ${name}`);
-      await new Promise(r => setTimeout(r, 0));
-    } else {
+      await new Promise(r => setTimeout(r, 16)); // 매 종목마다 한 프레임 양보 → UI 갱신
+    } catch(e) {
+      console.warn('[applyParsedData] 종목 처리 오류:', s?.name, e);
       skippedCount++;
     }
   }
@@ -1427,8 +1469,8 @@ async function applyParsedData() {
     }
   });
 
-  savePortfolioToSupabase?.();
-  save();
+  try { savePortfolioToSupabase?.(); } catch(e) { console.warn('supabase sync 실패:', e); }
+  save(); // localStorage는 마지막 1회만
   return { addedCount, skippedCount, addedStocks };
 }
 
